@@ -1,6 +1,6 @@
 // Garde une copie de la page, des meubles et de la 3D : l'appli s'ouvre même sans Internet.
 // Chaque ouverture affiche la copie gardée, puis la met à jour en arrière-plan.
-const CACHE = 'ma-chambre-v3';
+const CACHE = 'ma-chambre-v4';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => {

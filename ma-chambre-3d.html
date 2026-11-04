@@ -808,7 +808,8 @@ function getViewTexture() {
 /* ---------- Scène ---------- */
 const stage = $('stage'), labelsEl = $('labels');
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });     // fond transparent : le papier millimétré de #stage passe derrière
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+// Sur un écran tactile, 1,5 pixel par point suffit : au-delà, la carte graphique d'un téléphone sature.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, window.matchMedia && matchMedia('(pointer: coarse)').matches ? 1.5 : 2));
 renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -2793,20 +2794,20 @@ $('redoBtn').onclick = redo;
 ['orbit', 'plan', 'walk'].forEach(v => { $('v-' + v).onclick = () => setView(v); });
 
 /* ---------- Catalogue avec aperçu 3D ---------- */
-const shop = { open: false, key: null, color: null, tab: null, model: null, yaw: -0.55, auto: true, clock: 0, grab: null, queue: [], thumbs: new Map(), cards: new Map(), tabs: new Map() };
+const shop = { open: false, key: null, color: null, tab: null, model: null, yaw: -0.55, auto: true, clock: 0, pas: 0, grab: null, queue: [], vues: new Set(), thumbs: new Map(), cards: new Map(), tabs: new Map() };
 const CALM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-let pr = null, pScene, pCam, pSun;
+let pr = null, vig = null, pScene, pCam, pSun;
 
 /* L'aperçu est dessiné par le rendu de la pièce, dans une image hors écran recopiée sur un canvas 2D :
    sur certains téléphones, un second contexte WebGL fait disparaître la pièce. */
-function apercuRendu() {
+function apercuRendu(plafond) {
   const cv = document.createElement('canvas'), c2 = cv.getContext('2d');
   const Cible = renderer.capabilities.isWebGL2 ? THREE.WebGLMultisampleRenderTarget : THREE.WebGLRenderTarget;
   let rt = null, px = null, img = null;
   return {
     domElement: cv,
     setSize(w) {
-      const n = Math.min(640, Math.round(w * Math.min(window.devicePixelRatio || 1, 2)));
+      const n = Math.min(plafond, Math.round(w * Math.min(window.devicePixelRatio || 1, 2)));
       if (cv.width === n && rt) return;
       cv.width = cv.height = n;
       if (rt) rt.dispose();
@@ -2825,7 +2826,8 @@ function apercuRendu() {
   };
 }
 function shopInit() {
-  pr = apercuRendu();
+  pr = apercuRendu(480);
+  vig = apercuRendu(160); vig.setSize(160);     // les vignettes s'affichent en petit : 160 pixels suffisent
   $('shopView').appendChild(pr.domElement);
   pScene = new THREE.Scene();
   pCam = new THREE.PerspectiveCamera(28, 1, 0.05, 80);
@@ -2848,11 +2850,12 @@ function shopTheme() {
   if (!pr) return;
   pScene.background = lin(getComputedStyle(document.documentElement).getPropertyValue('--stage').trim());
   shop.thumbs.clear();
-  shop.queue = CATALOG.flatMap(g => g.items.map(s => s.key));
+  shop.queue = [...shop.vues];
+  shop.dessine = null;
 }
 function shopResize() {
   const n = $('shopView').clientWidth;
-  if (n) pr.setSize(n);
+  if (n) { pr.setSize(n); shop.dessine = null; }
 }
 function shopModel(key, color) {
   const s = SPEC[key], i = normalize({ k: key, x: 0, z: 0, wall: 'n', t: 0, color }, 9000), g = new THREE.Group();
@@ -2915,9 +2918,19 @@ function shopSetTab(name) {
   }));
   $('shopCompte').textContent = keys.length + (keys.length > 1 ? ' meubles' : ' meuble');
   $('shopGrid').scrollTop = 0;
-  const vus = new Set(keys);
-  shop.queue.sort((a, b) => vus.has(b) - vus.has(a));     // les vignettes visibles d'abord
-  if (keys.length && !vus.has(shop.key)) shopSelect(keys[0]);
+  if (keys.length && !keys.includes(shop.key)) shopSelect(keys[0]);
+}
+/* Une vignette n'est dessinée que lorsque sa carte arrive à l'écran : en dessiner un millier d'un coup
+   remplit la mémoire et bloque les téléphones. */
+let vigiles = null;
+function shopVigie() {
+  vigiles = new IntersectionObserver(entrees => entrees.forEach(e => {
+    const key = e.target.dataset.key;
+    if (!e.isIntersecting) { shop.vues.delete(key); return; }
+    shop.vues.add(key);
+    if (!shop.thumbs.has(key) && !shop.queue.includes(key)) shop.queue.push(key);
+  }), { root: $('shopGrid'), rootMargin: '150px 0px' });
+  shop.cards.forEach(b => vigiles.observe(b));
 }
 function shopBuildUI() {
   ['Tout', ...CATALOG.map(g => g.group)].forEach(name => {
@@ -2927,7 +2940,7 @@ function shopBuildUI() {
   });
   CATALOG.forEach(g => g.items.forEach(s => {
     const b = document.createElement('button');
-    b.className = 'thumb'; b.title = `${s.name} (${s.w} × ${s.d} × ${s.h} cm)`;
+    b.className = 'thumb'; b.dataset.key = s.key; b.title = `${s.name} (${s.w} × ${s.d} × ${s.h} cm)`;
     b.append(document.createElement('span'), document.createElement('span'));
     b.lastChild.textContent = s.marque ? s.marque + ' · ' + s.name : s.name;
     const pr = document.createElement('b'); pr.textContent = s.prix == null ? 'Prix à vérifier' : prixTexte(s.prix); b.lastChild.appendChild(pr);
@@ -2945,7 +2958,7 @@ function openShop() {
   $('saves').hidden = true; $('totaux').hidden = true;
   if (view === 'walk') setView('orbit');
   select(null);
-  if (!pr) { shopInit(); shopBuildUI(); }
+  if (!pr) { shopInit(); shopBuildUI(); shopVigie(); }
   shop.open = true;
   $('shop').hidden = false; $('bottombar').hidden = true;
   shopResize();
@@ -3019,26 +3032,32 @@ window.addEventListener('pointerup', e => {
 window.addEventListener('pointercancel', () => glisseFin(true));
 window.addEventListener('touchmove', e => { if (glisse && glisse.actif) e.preventDefault(); }, { passive: false });
 function shopThumbStep() {                // une vignette par image, pour ne jamais figer la page
-  const key = shop.queue.shift();
-  if (!key || !shop.model || !pr.domElement.width) { if (key) shop.queue.unshift(key); return; }
+  let key;
+  do key = shop.queue.shift(); while (key && (!shop.vues.has(key) || shop.thumbs.has(key)));
+  if (!key || !shop.model) return false;
   shop.model.g.visible = false;
   const m = shopModel(key);
   m.g.rotation.y = -0.55;
-  pScene.add(m.g); shopFrame(m.i); pr.render(pScene, pCam);
-  const url = pr.domElement.toDataURL('image/jpeg', 0.86);
+  pScene.add(m.g); shopFrame(m.i); vig.render(pScene, pCam);
+  const url = vig.domElement.toDataURL('image/jpeg', 0.82);
   pScene.remove(m.g); disposeGroup(m.g);
   shop.thumbs.set(key, url);
   shop.cards.get(key).firstChild.style.backgroundImage = `url(${url})`;
   shop.model.g.visible = true;
+  return true;
 }
 function shopTick(dt) {
   if (!shop.model || !pr.domElement.width) return;
   shopThumbStep();
   const wall = spec(shop.model.i).wall;
   if (shop.auto) { shop.clock += dt; shop.yaw = wall ? -0.1 + Math.sin(shop.clock * 0.8) * 0.5 : -0.55 + shop.clock * 0.5; }
+  // L'aperçu tourne à 30 images par seconde, et ne se redessine pas quand rien ne bouge.
+  shop.pas = (shop.pas + 1) % 2;
+  if (shop.dessine === shop.model && (shop.yawDessine === shop.yaw || shop.pas)) return;
   shop.model.g.rotation.y = shop.yaw;
   shopFrame(shop.model.i);
   pr.render(pScene, pCam);
+  shop.dessine = shop.model; shop.yawDessine = shop.yaw;
 }
 $('shopBtn').onclick = openShop;
 $('shopBtn2').onclick = openShop;
